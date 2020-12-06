@@ -42,4 +42,5 @@ the existing. Then convince mac to execute it.
 * [ESP32 based stepper controller](https://github.com/bdring/Grbl_Esp32)
 * [Simple Kalman Filter library](https://github.com/denyssene/SimpleKalmanFilter)
 * [Sampling ADC from interupt](https://www.toptal.com/embedded/esp32-audio-sampling)
-
+* [S curves based motion planning](https://www.pmdcorp.com/resources/type/articles/get/mathematics-of-motion-control-profiles-article)
+  * Takeaway: For stepper motors the torque and hence maximum acceleration is a function of the current velocity.

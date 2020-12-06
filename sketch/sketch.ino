@@ -10,22 +10,76 @@
 
 #define PIN_DIR  12
 #define PIN_STEP GPIO_NUM_13
-
+#define RMT_TX_CHANNEL (RMT_CHANNEL_0)
 
 char buffer[100];
 
-rmt_config_t step_rmt_config;
 
-rmt_item32_t step_rmt_items[] = {
-  // duration, level, duration, level (duration 15 bit in 1 μs ticks)
-  {{{200, 1, 200, 0}}}, // 200 μs HIGH, 200 μs LOW
+// A single pulse counts as two events. The maximum number of pulses we
+// can set the interupt alarm for is 255. At 600 rpm this corresponds to
+// 126 Hz interupts, or every 8 ms.
+#define MAX_THRESHOLD 510
+#define MAX_PULSES 255
+
+
+#define MOTOR_BUFFER_LEN 4 // Must be power of two
+
+struct motor_command_t {
+  uint32_t count;     // Pulse count
+  uint16_t duration;  // Pulse duration in 100ns increments
 };
 
-void IRAM_ATTR on_rmt() {
-   portENTER_CRITICAL_ISR(&timer_mutex);
-   
-   
-   portEXIT_CRITICAL_ISR(&timer_mutex);
+motor_command_t motor_buffer[MOTOR_BUFFER_LEN] = {
+  {200 * 16, 2000},
+  {200 * 16, 1000},
+  {200 * 16, 500},
+  {200 * 16, 1000},
+};
+uint16_t motor_read = 0;
+uint32_t counter = 0;
+
+
+void IRAM_ATTR load_next_command() {
+  // Set count
+  counter = motor_buffer[motor_read].count;
+  if (counter > MAX_PULSES) {
+    RMT.tx_lim_ch[0].limit = MAX_THRESHOLD;
+  } else {
+    RMT.tx_lim_ch[0].limit = counter * 2;
+  }
+
+  // Set pulse duration
+  uint16_t duration = motor_buffer[motor_read].duration;
+  uint16_t duration0 = duration / 2;
+  uint16_t duration1 = duration - duration0;
+  rmt_item32_t pulse = {{{duration0, 1, duration1, 0}}};
+  RMTMEM.chan[0].data32[0].val = pulse.val;
+
+  // TODO: Direction.
+  // TODO: Stopping.
+  // TODO: This is constant velocity, add constant acceleration and constant jerk modes?
+  
+  // Advance ring buffer
+  motor_read += 1;
+  motor_read &= MOTOR_BUFFER_LEN - 1;
+}
+
+void IRAM_ATTR on_rmt(void* arg) {
+   // Clear event
+   RMT.int_clr.ch0_tx_thr_event = 1;
+
+   // Update counter
+   if (counter > MAX_PULSES) {
+     counter -= MAX_PULSES;
+   } else {
+     counter = 0;
+   }
+   if (counter == 0) {
+      load_next_command();
+   } else if (counter < MAX_PULSES) {
+     // Continue running for remaining amount
+     RMT.tx_lim_ch[0].limit = counter * 2;
+   }
 }
 
 void setup() {
@@ -43,36 +97,52 @@ void setup() {
   setup_pots();
 
   // Configure direction pin
+  pinMode(PIN_STEP, OUTPUT);
   pinMode(PIN_DIR, OUTPUT);
 
   // Configure RMT for driving STEP pulses
-  step_rmt_config.rmt_mode = RMT_MODE_TX;
-  step_rmt_config.channel = RMT_CHANNEL_0;
-  step_rmt_config.gpio_num = PIN_STEP;
-  step_rmt_config.mem_block_num = 1;
-  step_rmt_config.tx_config.loop_en = 1; // Repeat
-  step_rmt_config.tx_config.carrier_en = 0;
-  step_rmt_config.tx_config.idle_output_en = 1;
-  step_rmt_config.tx_config.idle_level = RMT_IDLE_LEVEL_LOW;
-  step_rmt_config.tx_config.carrier_level = RMT_CARRIER_LEVEL_HIGH;
-  step_rmt_config.clk_div = 8; // 80 MHz / 8 = 10MHz or .1 μs per tick
-  rmt_config(&step_rmt_config);
-  rmt_driver_install(step_rmt_config.channel, 0, 0);  //  rmt_driver_install(rmt_channel_t channel, size_t rx_buf_size, int rmt_intr_num)
-  
-  // Spin motor
-  rmt_write_items(step_rmt_config.channel, step_rmt_items, 1, 0);
-  //rmt_fill_tx_items(step_rmt_config.channel, step_rmt_items, 1, 0);
-  //RMT.conf_ch[step_rmt_config.channel].conf1.mem_rd_rst = 1;
-  //RMT.conf_ch[step_rmt_config.channel].conf1.tx_start   = 1;
+  rmt_config_t config = {
+    .rmt_mode         = RMT_MODE_TX,
+    .channel          = RMT_CHANNEL_0,
+    .clk_div          = 8, // 80 MHz / 8 = 10MHz or .1 μs per tick
+    .gpio_num         = PIN_STEP,
+    .mem_block_num    = 1,
+  };
+  config.tx_config = {
+    .loop_en              = true, // Repeat
+    .carrier_freq_hz      = 0,
+    .carrier_duty_percent = 50, // %
+    .carrier_level        = RMT_CARRIER_LEVEL_HIGH,
+    .carrier_en           = false,
+    .idle_level           = RMT_IDLE_LEVEL_LOW,
+    .idle_output_en       = true,
+  };
+  ESP_ERROR_CHECK(rmt_config(&config));
+  ESP_ERROR_CHECK(rmt_set_source_clk(RMT_TX_CHANNEL, RMT_BASECLK_APB)); // 80 Mhz.
+  ESP_ERROR_CHECK(rmt_isr_register(on_rmt, NULL, ESP_INTR_FLAG_LEVEL1, 0));
 
-  // Interupt after 32000 steps
-  // rmt_isr_register(&on_rmt, NULL, 0, NULL);
-  // rmt_rmt_set_tx_thr_intr_en(step_rmt_config.channel, true, 32000);
+  // Fill the entire block with 'end of block' markers.
+  rmt_item32_t endSentinel = {{{ 0, 0, 0, 0 }}};
+  for (int j = 0 ; j < 64; j++)
+    RMTMEM.chan[config.channel].data32[j].val = endSentinel.val;
+
+  load_next_command();
+
+  // Enable treshold event
+  RMT.int_clr.ch0_tx_thr_event = 1;
+  RMT.int_ena.ch0_tx_thr_event = 1;
+
+  // Start pulsing!
+  RMT.conf_ch[0].conf1.tx_start = 1;
 }
 
 void loop() {
   // Update potentiometer readings
   update_pots();
+
+  Serial.print(motor_read);
+  Serial.print(" ");
+  Serial.println(counter);
 
   // Display potentiometer readings
   sprintf(buffer, "%.3f %.3f %.3f %.3f", POT(0), POT(1), POT(2), POT(3));
@@ -93,7 +163,7 @@ void loop() {
   if (pulse_uspp >= 32767.0 || pulse_uspp <= -32767.0) {
     pulse_uspp = 32767;
   }
-  Serial.println(uspp_int);
+  // Serial.println(uspp_int);
   
   // Update motor speed
   if (speed_rps >= 0) {
@@ -101,13 +171,6 @@ void loop() {
   } else {
     digitalWrite(PIN_DIR, LOW);
   }
-  step_rmt_items[0].duration0 = uspp_int / 2;
-  step_rmt_items[0].duration1 = uspp_int - step_rmt_items[0].duration0;
 
-  //rmt_fill_tx_items(step_rmt_config.channel, step_rmt_items, 1, 0);
-
-  // IRAM version of rmt_fill_tx_items(step_rmt_config.channel, step_rmt_items, 1, 0);
-  RMTMEM.chan[step_rmt_config.channel].data32[0].val = step_rmt_items[0].val;
-  
   delay(10);
 }
