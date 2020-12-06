@@ -6,12 +6,13 @@
 #include <soc/rmt_reg.h>
 #include <soc/rmt_struct.h>
 
-#define PIN_POT1 36
-#define PIN_POT2 37
-#define PIN_POT3 38
-#define PIN_POT4 39
+#include "pots.h"
+
 #define PIN_DIR  12
 #define PIN_STEP GPIO_NUM_13
+
+
+char buffer[100];
 
 rmt_config_t step_rmt_config;
 
@@ -20,80 +21,14 @@ rmt_item32_t step_rmt_items[] = {
   {{{200, 1, 200, 0}}}, // 200 μs HIGH, 200 μs LOW
 };
 
-// SimpleKalmanFilter(e_mea, e_est, q);
-// e_mea: Measurement Uncertainty 
-// e_est: Estimation Uncertainty 
-// q: Process Noise
-
-uint32_t pot_index = 0;
-uint16_t pot_samples[4][64];
-int last_time = 0;
-
-const float pot_scale = 1.0 / 4096.0;
-
-struct kalman_filter_t {
-  float estimate;
-  float err_estimate;
-};
-const float kalman_measurement_error = 0.05; // Sensor noise
-const float kalman_q = 0.02; // Process noise
-kalman_filter_t kf[] = {
-  {0.5, kalman_measurement_error},
-  {0.5, kalman_measurement_error},
-  {0.5, kalman_measurement_error},
-  {0.5, kalman_measurement_error},
-};
-
-hw_timer_t* adc_timer = NULL;
-portMUX_TYPE DRAM_ATTR timer_mutex = portMUX_INITIALIZER_UNLOCKED; 
-
-
-#define ADC_SAMPLES_COUNT 1024 // Must be power of two
-uint16_t adc_buffer[ADC_SAMPLES_COUNT][4];
-uint16_t adc_write = 0;
-uint16_t adc_read = 0;
-
-void kalman_update(kalman_filter_t* filter, float value) {
-  float kalman_gain = filter->err_estimate / (filter->err_estimate + kalman_measurement_error);
-  float delta_est = kalman_gain * (value - filter->estimate);
-  filter->estimate += delta_est;
-  
-  if (delta_est < 0.0) {
-    delta_est = -delta_est;
-  }
-  filter->err_estimate *= 1.0 - kalman_gain;
-  filter->err_estimate += delta_est * kalman_q;
-}
-
-// Simplified version of `adc1_get_raw` for IRAM use
-// Requires adc1_get_raw to be called at least once to do the setup
-int IRAM_ATTR iram_adc1_get_raw(int channel) {
-    uint16_t adc_value;
-    SENS.sar_meas_start1.sar1_en_pad = (1 << channel); // only one channel is selected
-    while (SENS.sar_slave_addr1.meas_status != 0);
-    SENS.sar_meas_start1.meas1_start_sar = 0;
-    SENS.sar_meas_start1.meas1_start_sar = 1;
-    while (SENS.sar_meas_start1.meas1_done_sar == 0);
-    adc_value = SENS.sar_meas_start1.meas1_data_sar;
-    return adc_value;
-}
-
-void IRAM_ATTR on_timer() {
+void IRAM_ATTR on_rmt() {
    portENTER_CRITICAL_ISR(&timer_mutex);
    
-   // Read pots to ring buffer
-   adc_buffer[adc_write][0] = iram_adc1_get_raw(ADC1_CHANNEL_0);
-   adc_buffer[adc_write][1] = iram_adc1_get_raw(ADC1_CHANNEL_1);
-   adc_buffer[adc_write][2] = iram_adc1_get_raw(ADC1_CHANNEL_2);
-   adc_buffer[adc_write][3] = iram_adc1_get_raw(ADC1_CHANNEL_3);
-   adc_write += 1;
-   adc_write &= ADC_SAMPLES_COUNT - 1;
    
    portEXIT_CRITICAL_ISR(&timer_mutex);
 }
 
 void setup() {
-
   Heltec.begin(true /*DisplayEnable Enable*/, false /*LoRa Enable*/, true /*Serial Enable*/);
   delay(300);
 
@@ -104,17 +39,8 @@ void setup() {
   Heltec.display->drawString(0, 0, "Start Measuring....");
   Heltec.display->display();
 
-  // Configure ADC for reading pots
-  adc1_config_width(ADC_WIDTH_BIT_12);
-  adc1_config_channel_atten(ADC1_CHANNEL_0, ADC_ATTEN_MAX);
-  adc1_config_channel_atten(ADC1_CHANNEL_1, ADC_ATTEN_MAX);
-  adc1_config_channel_atten(ADC1_CHANNEL_2, ADC_ATTEN_MAX);
-  adc1_config_channel_atten(ADC1_CHANNEL_3, ADC_ATTEN_MAX);
-  // Fetch now so any setup is done and we can use iram_adc1_get_raw
-  adc1_get_raw(ADC1_CHANNEL_0);
-  adc1_get_raw(ADC1_CHANNEL_1);
-  adc1_get_raw(ADC1_CHANNEL_2);
-  adc1_get_raw(ADC1_CHANNEL_3);
+  // Configure potentiometers
+  setup_pots();
 
   // Configure direction pin
   pinMode(PIN_DIR, OUTPUT);
@@ -140,36 +66,20 @@ void setup() {
   //RMT.conf_ch[step_rmt_config.channel].conf1.tx_start   = 1;
 
   // Interupt after 32000 steps
-  rmt_isr_register(&on_rmt, NULL, 0, NULL);
-  rmt_rmt_set_tx_thr_intr_en(step_rmt_config.channel, true, 32000);
-
-  // Configure timer interupt
-  adc_timer = timerBegin(3, 80, true); // 80 MHz / 80 = 1 MHz hardware clock for easy figuring
-  timerAttachInterrupt(adc_timer, &on_timer, true); // Attaches the handler function to the timer 
-  timerAlarmWrite(adc_timer, 1000, true); // Interrupts at 1 Mhz / 1000 = 1 kHz
-  timerAlarmEnable(adc_timer);
+  // rmt_isr_register(&on_rmt, NULL, 0, NULL);
+  // rmt_rmt_set_tx_thr_intr_en(step_rmt_config.channel, true, 32000);
 }
 
-
-char buffer[100];
-
 void loop() {
-  // Serial.println(adc_write);
+  // Update potentiometer readings
+  update_pots();
 
-  // Read the ADC ring buffer and update Kalman filters
-  while (adc_read != adc_write) {
-    kalman_update(&kf[0], pot_scale *adc_buffer[adc_read][0]);
-    kalman_update(&kf[1], pot_scale *adc_buffer[adc_read][1]);
-    kalman_update(&kf[2], pot_scale *adc_buffer[adc_read][2]);
-    kalman_update(&kf[3], pot_scale *adc_buffer[adc_read][3]);
-    adc_read += 1;
-    adc_read &= ADC_SAMPLES_COUNT - 1;
-  }
-
-  sprintf(buffer, "%.3f %.3f %.3f %.3f", kf[0].estimate, kf[1].estimate, kf[2].estimate, kf[3].estimate);
+  // Display potentiometer readings
+  sprintf(buffer, "%.3f %.3f %.3f %.3f", POT(0), POT(1), POT(2), POT(3));
   Heltec.display->clear();
   Heltec.display->drawString(0, 0, buffer);
   Heltec.display->display();
+  // Serial.println(buffer);
 
   float knob = 2.0 * kf[0].estimate - 1.0;
   float speed_rps = knob * 10.0; // 0..10 revolutions per second
@@ -200,15 +110,4 @@ void loop() {
   RMTMEM.chan[step_rmt_config.channel].data32[0].val = step_rmt_items[0].val;
   
   delay(10);
-}
-
-double read_pot(byte pin){
-  analogRead(pin); // Read twice, take second reading
-  double reading = analogRead(pin); // Reference voltage is 3v3 so maximum reading is 3v3 = 4095 in range 0 to 4095
-  double result = -0.000000000000016;
-  result *= reading; result += 0.000000000118171;
-  result *= reading; result -= 0.000000301211691;
-  result *= reading; result += 0.001109019271794;
-  result *= reading; result += 0.034143524634089;
-  return result * 100.0 / 3.3;
 }
