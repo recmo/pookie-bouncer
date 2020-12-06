@@ -125,12 +125,15 @@ void setup() {
   step_rmt_config.tx_config.idle_output_en = 1;
   step_rmt_config.tx_config.idle_level = RMT_IDLE_LEVEL_LOW;
   step_rmt_config.tx_config.carrier_level = RMT_CARRIER_LEVEL_HIGH;
-  step_rmt_config.clk_div = 80; // 80M Hz / 80 = 1MHz or 1 μs per tick
+  step_rmt_config.clk_div = 8; // 80 MHz / 8 = 10MHz or .1 μs per tick
   rmt_config(&step_rmt_config);
   rmt_driver_install(step_rmt_config.channel, 0, 0);  //  rmt_driver_install(rmt_channel_t channel, size_t rx_buf_size, int rmt_intr_num)
   
   // Spin motor
   rmt_write_items(step_rmt_config.channel, step_rmt_items, 1, 0);
+
+  // Interupt after 32000 steps
+  // rmt_rmt_set_tx_thr_intr_en(step_rmt_config.channel, true, 32000);
 
   // Configure timer interupt
   adc_timer = timerBegin(3, 80, true); // 80 MHz / 80 = 1 MHz hardware clock for easy figuring
@@ -155,16 +158,24 @@ void loop() {
     adc_read &= ADC_SAMPLES_COUNT - 1;
   }
 
-  sprintf(buffer, "%.4f %.4f %.4f %.4f\n", kf[0].estimate, kf[1].estimate, kf[2].estimate, kf[3].estimate);
+  sprintf(buffer, "%.3f %.3f %.3f %.3f", kf[0].estimate, kf[1].estimate, kf[2].estimate, kf[3].estimate);
   Heltec.display->clear();
   Heltec.display->drawString(0, 0, buffer);
   Heltec.display->display();
-  Serial.print(buffer);
 
+  float speed_rps = kf[0].estimate * 10.0; // 0..10 revolutions per second
+  float speed_pps = speed_rps * 200 * 16; // pulses per second
+  float pulse_uspp = 1e7 / speed_pps; // microseconds per pulse
+  if (speed_rps == 0.0 || pulse_uspp >= 32767.0) {
+    // TODO: Stop entirely
+    pulse_uspp = 32767;
+  }
+  uint16_t uspp_int = pulse_uspp;
+  Serial.println(uspp_int);
+  
   // Update motor speed
-  // 1 rps => 200 * 16 = 32000 pps => 31.5 μspp
-  step_rmt_items[0].duration0 = 20 + 400 * 0.5;
-  step_rmt_items[0].duration1 = 20 + 400 * 0.5;
+  step_rmt_items[0].duration0 = uspp_int / 2;
+  step_rmt_items[0].duration1 = uspp_int - step_rmt_items[0].duration0;
   rmt_write_items(step_rmt_config.channel, step_rmt_items, 1, 0);
 
   delay(10);
