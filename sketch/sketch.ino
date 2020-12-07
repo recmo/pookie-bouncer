@@ -8,78 +8,50 @@
 
 #include "pots.h"
 
+#define TAU 6.283185307179586
 #define PIN_DIR  12
 #define PIN_STEP GPIO_NUM_13
 #define RMT_TX_CHANNEL (RMT_CHANNEL_0)
 
 char buffer[100];
 
+#define MIN_DURATION 312   // 600 RPM (physical limit)
+#define MAX_DURATION 65534 // 2.86 RPM (max representable)
+#define SWITCH_DIRECTION 65535
 
-// A single pulse counts as two events. The maximum number of pulses we
-// can set the interupt alarm for is 255. At 600 rpm this corresponds to
-// 126 Hz interupts, or every 8 ms.
-#define MAX_THRESHOLD 510
-#define MAX_PULSES 255
-
-
-#define MOTOR_BUFFER_LEN 4 // Must be power of two
-
-struct motor_command_t {
-  uint32_t count;     // Pulse count
-  uint16_t duration;  // Pulse duration in 100ns increments
-};
-
-motor_command_t motor_buffer[MOTOR_BUFFER_LEN] = {
-  {200 * 16, 2000},
-  {200 * 16, 1000},
-  {200 * 16, 500},
-  {200 * 16, 1000},
-};
+#define MOTOR_BUFFER_LEN 1024 // Must be power of two
+uint16_t motor_buffer[MOTOR_BUFFER_LEN];
 uint16_t motor_read = 0;
-uint32_t counter = 0;
+uint16_t motor_write = 0;
 
-
-void IRAM_ATTR load_next_command() {
-  // Set count
-  counter = motor_buffer[motor_read].count;
-  if (counter > MAX_PULSES) {
-    RMT.tx_lim_ch[0].limit = MAX_THRESHOLD;
-  } else {
-    RMT.tx_lim_ch[0].limit = counter * 2;
-  }
-
-  // Set pulse duration
-  uint16_t duration = motor_buffer[motor_read].duration;
-  uint16_t duration0 = duration / 2;
-  uint16_t duration1 = duration - duration0;
-  rmt_item32_t pulse = {{{duration0, 1, duration1, 0}}};
-  RMTMEM.chan[0].data32[0].val = pulse.val;
-
-  // TODO: Direction.
-  // TODO: Stopping.
-  // TODO: This is constant velocity, add constant acceleration and constant jerk modes?
-  
-  // Advance ring buffer
-  motor_read += 1;
-  motor_read &= MOTOR_BUFFER_LEN - 1;
-}
-
+// max pulses per second = 10 * 200 * 16 = 32 kHz = 31.25 us
+// interupts every 60 pulses = 533 Hz = 1.875 ms
 void IRAM_ATTR on_rmt(void* arg) {
-   // Clear event
-   RMT.int_clr.ch0_tx_thr_event = 1;
+  // Clear event
+  RMT.int_clr.ch0_tx_thr_event = 1;
+  
+  // Set pulse duration
+  for (int i = 0; i < 60; i++) {
+    // Read ring buffer
+    uint16_t duration = motor_buffer[motor_read];
+    motor_read += 1;
+    motor_read &= MOTOR_BUFFER_LEN - 1;
 
-   // Update counter
-   if (counter > MAX_PULSES) {
-     counter -= MAX_PULSES;
-   } else {
-     counter = 0;
-   }
-   if (counter == 0) {
-      load_next_command();
-   } else if (counter < MAX_PULSES) {
-     // Continue running for remaining amount
-     RMT.tx_lim_ch[0].limit = counter * 2;
-   }
+    // Handle direction switches 
+    if (duration == SWITCH_DIRECTION) {
+      digitalWrite(PIN_DIR, digitalRead(PIN_DIR) ^ 1);
+      i -= 1;
+      continue;
+    }
+    
+    // Compute pulse
+    uint16_t duration0 = duration / 2;
+    uint16_t duration1 = duration - duration0;
+    rmt_item32_t pulse = {{{duration0, 1, duration1, 0}}};
+
+    // Write pulse to channel
+    RMTMEM.chan[0].data32[i].val = pulse.val;
+  }
 }
 
 void setup() {
@@ -99,6 +71,13 @@ void setup() {
   // Configure direction pin
   pinMode(PIN_STEP, OUTPUT);
   pinMode(PIN_DIR, OUTPUT);
+
+  // Configure motor parameters
+  // See https://www.omc-stepperonline.com/download/17HS19-2004S1.pdf
+  // See https://www.omc-stepperonline.com/download/17HS19-2004S1_Torque_Curve.pdf
+  double max_rpm       = 600;  // rpm
+  double max_torque    = 30;   // N cm
+  double inertial_mass = 82.0; // g cm2
 
   // Configure RMT for driving STEP pulses
   rmt_config_t config = {
@@ -122,27 +101,89 @@ void setup() {
   ESP_ERROR_CHECK(rmt_isr_register(on_rmt, NULL, ESP_INTR_FLAG_LEVEL1, 0));
 
   // Fill the entire block with 'end of block' markers.
-  rmt_item32_t endSentinel = {{{ 0, 0, 0, 0 }}};
-  for (int j = 0 ; j < 64; j++)
-    RMTMEM.chan[config.channel].data32[j].val = endSentinel.val;
+  for (int i = 0; i < 64; i++)
+    RMTMEM.chan[0].data32[i].val = 0;
 
-  load_next_command();
+  // Write motor buffer
+  for (int j = 0; j < MOTOR_BUFFER_LEN; j++)
+    motor_buffer[j] = 2000;
+
+  // Load buffer
+  on_rmt(NULL);
 
   // Enable treshold event
   RMT.int_clr.ch0_tx_thr_event = 1;
   RMT.int_ena.ch0_tx_thr_event = 1;
+  RMT.tx_lim_ch[0].limit = 60;
 
   // Start pulsing!
   RMT.conf_ch[0].conf1.tx_start = 1;
+}
+
+inline int motor_buffer_left() {
+  
+}
+
+uint32_t motor_time = 0;     // Time in 100ns
+int32_t motor_position = 0;  // Position in 1/32000 revolutions
+bool motor_direction = true; // True for positive position direction
+
+inline unsigned int motor_buffer_space() {
+  return (motor_read - motor_write) & MOTOR_BUFFER_LEN - 1;
+}
+
+inline bool can_write_pulse() {
+  return motor_buffer_space() >= 2;
+}
+
+// Writes the pulse to the motor buffer and updates time, position and direction.
+inline void write_pulse(bool step_direction, uint16_t duration) {
+  // Conditionally write direction change
+  if (step_direction != motor_direction) {
+    Serial.println("Reverse");
+    motor_buffer[motor_write] = SWITCH_DIRECTION;
+    motor_write += 1;
+    motor_write &= MOTOR_BUFFER_LEN - 1;
+  }
+
+  // Cap duration
+  if (duration < MIN_DURATION) {
+    Serial.println("Under");
+    duration = MIN_DURATION;
+  } else if (duration > MAX_DURATION) {
+    Serial.println("Over");
+    duration = MAX_DURATION;
+  }
+
+  // Write pulse
+  motor_buffer[motor_write] = duration;
+  motor_write += 1;
+  motor_write &= MOTOR_BUFFER_LEN - 1;
+
+  // Update state
+  motor_time += duration;
+  motor_position += step_direction ? 1 : -1;
+  motor_direction = step_direction;
 }
 
 void loop() {
   // Update potentiometer readings
   update_pots();
 
-  Serial.print(motor_read);
-  Serial.print(" ");
-  Serial.println(counter);
+  Serial.println((motor_read - motor_write) & (MOTOR_BUFFER_LEN - 1));
+
+  while (can_write_pulse()) {
+    // TODO: Don't use instantenous velocity but solve over range.
+    float t_sec = motor_time * 1e-7; // Time in seconds
+    float omega = POT(0) * cos(t_sec); // Revolutions per second
+    float sps = omega * 32000; // Steps per second
+    float hnsps = 1.0e7 / sps; // 100ns per step
+    if (hnsps < 0) {
+      write_pulse(false, -hnsps);
+    } else {
+      write_pulse(true, hnsps);
+    }
+  }
 
   // Display potentiometer readings
   sprintf(buffer, "%.3f %.3f %.3f %.3f", POT(0), POT(1), POT(2), POT(3));
@@ -150,27 +191,6 @@ void loop() {
   Heltec.display->drawString(0, 0, buffer);
   Heltec.display->display();
   // Serial.println(buffer);
-
-  float knob = 2.0 * kf[0].estimate - 1.0;
-  float speed_rps = knob * 10.0; // 0..10 revolutions per second
-  float speed_pps = speed_rps * 200 * 16; // pulses per second
-  float pulse_uspp = 1e7 / speed_pps; // microseconds per pulse
-  uint16_t uspp_int = pulse_uspp > 0 ? pulse_uspp : -pulse_uspp;
-  if (speed_rps == 0.0) {
-    // TODO: Stop entirely
-    pulse_uspp = 32767;
-  }
-  if (pulse_uspp >= 32767.0 || pulse_uspp <= -32767.0) {
-    pulse_uspp = 32767;
-  }
-  // Serial.println(uspp_int);
-  
-  // Update motor speed
-  if (speed_rps >= 0) {
-    digitalWrite(PIN_DIR, HIGH);
-  } else {
-    digitalWrite(PIN_DIR, LOW);
-  }
 
   delay(10);
 }
