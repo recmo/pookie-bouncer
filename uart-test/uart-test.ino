@@ -1,5 +1,6 @@
 #include <heltec.h>
 #include <driver/uart.h>
+#include <TMCStepper.h>
 
 // UART unfortunately doesn't seem to run on a single
 // INPUT_OUTPUT_OD pin. Instead we need to do this
@@ -7,6 +8,8 @@
 // RX and connecting RX to the device.
 #define PIN_UART_RX GPIO_NUM_14
 #define PIN_UART_TX GPIO_NUM_27
+
+TMC2209Stepper driver(&Serial1, 0.11f, 0b00);
 
 char buffer[100];
 
@@ -63,7 +66,7 @@ uint32_t read_register(uint8_t reg) {
   //
   uint8_t reply[4 + 8];
   Serial.print("Reply: ");
-  Serial1.readBytes(reply, 8);
+  //Serial1.readBytesUntil(reply, 8);
   for (int i = 0; i < 12; i++) {
     sprintf(buffer, "%02x ", reply[i]);
     Serial.print(buffer);
@@ -85,13 +88,13 @@ void setup() {
   Heltec.display->display();
   
   Serial1.begin(115200, SERIAL_8N1, PIN_UART_RX, PIN_UART_TX);
-  Serial1.setTimeout(10);
+  driver.begin(); 
 }
 
 uint8_t datagram[] = { 0x05, 0x00, 0x06, 0x00 };
 
 void loop() {
-  read_register(0x06);
+  Serial.println(driver.GCONF());
     
   delay(1000);
 }
