@@ -2,14 +2,6 @@
 #include <driver/uart.h>
 #include <TMCStepper.h>
 
-// UART unfortunately doesn't seem to run on a single
-// INPUT_OUTPUT_OD pin. Instead we need to do this
-// externally by connecting a resistor between TX and
-// RX and connecting RX to the device.
-#define PIN_UART_RX GPIO_NUM_14
-#define PIN_UART_TX GPIO_NUM_27
-
-TMC2209Stepper driver(&Serial1, 0.11f, 0b00);
 
 char buffer[100];
 
