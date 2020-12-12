@@ -29,6 +29,7 @@ char buffer[100];
 #define MAX_RMT_DURATION 32767
 #define SWITCH_DIRECTION 65535
 
+// TODO: Signed integers for direction
 #define MOTOR_BUFFER_LEN 1024 // Must be power of two
 uint32_t motor_buffer[MOTOR_BUFFER_LEN];
 uint32_t motor_read = 0;
@@ -100,32 +101,32 @@ void IRAM_ATTR fill_half_buffer() {
 void IRAM_ATTR on_rmt(void* arg) {
   //Serial.println("Event:");
   if (RMT.int_st.ch0_tx_end) {
-    // NOTE: The timing until tx_start = 1 is elongates the current step.
-    // Ideally it is as fast as possible, hence the direct register writes. 
+    // NOTE: The RMT is currently in idle and outputting the idle level
+    // (which should match the last step level). The interupt handling will
+    // thus elongate the last step, so we want to do it as quick as possible.
     switch (next_action) {
     case ACTION_DIR_LOW:
-      // Set direction pin
       // TMC2209 requires 20ns setup and hold time on DIR.
-      // This interupt handler does 1400ns hold and 600ns setup at best.
-      // digitalWrite(PIN_DIR, 1);  //   2  us
-      // gpio_set_level(PIN_DIR, 1); // 12  us
-      GPIO.out_w1tc = 1 << PIN_DIR; //  1.5 us
-      RMT.conf_ch[0].conf1.tx_start = 1; // Continue
+      // This interupt handler does 1200ns hold and 300ns setup at best,
+      // and that is with direct register access.
+      GPIO.out_w1tc = 1 << PIN_DIR;
+      RMT.conf_ch[0].conf1.tx_start = 1; // Continue immediately
       break;
     case ACTION_DIR_HIGH:
-      GPIO.out_w1ts = 1 << PIN_DIR; //  1.5 ua
-      RMT.conf_ch[0].conf1.tx_start = 1; // Continue
+      GPIO.out_w1ts = 1 << PIN_DIR;
+      RMT.conf_ch[0].conf1.tx_start = 1; // Continue immediately
       break;
     case ACTION_STOP:
+      // Do noting
       break;
     default:
+      RMT.conf_ch[0].conf1.tx_start = 1; // Continue immediately
       break;
     }
     // Clear event
     RMT.int_clr.ch0_tx_end = 1;
 
-    // return;
-    Serial.println("End event:");
+    // TODO: Pop `next_action` value. (and also idle_lv?)
   }
   if (RMT.int_st.ch0_tx_thr_event) {
     // Clear event
@@ -222,7 +223,8 @@ void setup() {
   // Start pulsing!
   Serial.println("Starting..");
   RMT.conf_ch[0].conf1.mem_rd_rst = 1;
-  // TODO: Fix idle level.
+
+  // TODO: Compute actual idle level (0 or 1)
 
   // It is important that idle_out_lv and tx_start are set at the same time.
   // Setting tx_start first and idle_out_lv second causes the value not to be picked up

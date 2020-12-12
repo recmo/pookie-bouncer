@@ -20,7 +20,7 @@ the existing. Then convince mac to execute it.
 
 ## References
 
-* Heltec WiFi Kit 32
+* Heltec WiFi Kit 32 ESP32 board
   * [vendor](<https://heltec.org/project/wifi-kit-32/>)
   * [docs](https://heltec-automation-docs.readthedocs.io/en/latest/esp32+arduino/index.html)
   * [pinout (pdf)](https://resource.heltec.cn/download/WiFi_Kit_32/WIFI%20Kit%2032_pinoutDiagram_V1.pdf)
@@ -28,9 +28,12 @@ the existing. Then convince mac to execute it.
   * [source](https://github.com/Heltec-Aaron-Lee/WiFi_Kit_series/tree/master/esp32)
   * [oled/lora source](https://github.com/HelTecAutomation/Heltec_ESP32)
   * [oled api doc](https://github.com/HelTecAutomation/Heltec_ESP32/blob/master/src/oled/API.md)
-* [ESP32 Datasheet](https://www.espressif.com/sites/default/files/documentation/esp32_datasheet_en.pdf)
+* Espressif ESP32
+  * [datasheet](https://www.espressif.com/sites/default/files/documentation/esp32_datasheet_en.pdf)
+  * [technical reference manual](https://www.espressif.com/sites/default/files/documentation/esp32_technical_reference_manual_en.pdf)
   * [API docs](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference)
   * [hal source](https://github.com/espressif/esp-idf)
+  * [arduino core source](https://github.com/espressif/arduino-esp32)
 * BIQU A4988 Compatible motor driver modules
    * [vendor](https://www.biqu.equipment/products/1pcs-3d-printer-kit-a4988-stepper-motor-driver-module-with-heatsinks-reprap-board-for-3d-printer-free-shipping)
    * [A4988 datasheet](https://www.pololu.com/file/0J450/A4988.pdf)
@@ -44,3 +47,13 @@ the existing. Then convince mac to execute it.
 * [Sampling ADC from interupt](https://www.toptal.com/embedded/esp32-audio-sampling)
 * [S curves based motion planning](https://www.pmdcorp.com/resources/type/articles/get/mathematics-of-motion-control-profiles-article)
   * Takeaway: For stepper motors the torque and hence maximum acceleration is a function of the current velocity.
+* BIQU/BigTreeTech Trinamic TMC2209 module v1.2
+  * [amazon](https://www.amazon.com/gp/product/B07ZPV4HFP/ref=ppx_yo_dt_b_asin_title_o02_s00?ie=UTF8&psc=1)
+  * [bigtreetech](https://www.bigtree-tech.com/products/bigtreetech-tmc2209-v1-2-uart-stepper-motor-driver.html)
+  * [github](https://github.com/bigtreetech/BIGTREETECH-TMC2209-V1.2)
+  * [schematic](https://raw.githubusercontent.com/bigtreetech/BIGTREETECH-TMC2209-V1.2/master/Schematic/TMC2209-V1.2.pdf)
+* Trinamic TMC 2209
+  * [trinamic](https://www.trinamic.com/products/integrated-circuits/details/tmc2209-la/)
+  * [calculation sheet](https://docs.google.com/spreadsheets/d/1C5p0QwwM_rHSAZ_u0QOt3jWwEVLlNyW8jE0m5KOlscU/edit#gid=1709971105)
+  * [datasheet](https://www.trinamic.com/fileadmin/assets/Products/ICs_Documents/TMC2209_Datasheet_V105.pdf)
+* [TMCStepper driver](https://github.com/teemuatlut/TMCStepper)
