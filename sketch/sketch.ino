@@ -34,47 +34,85 @@ uint32_t motor_read = 0;
 uint32_t motor_write = 0;
 
 #define RMT_LEVEL_BIT 0x8000
-uint16_t rmt_level_bit = 0;
+uint32_t rmt_level_bit = RMT_LEVEL_BIT;
 
+// Read next half of an rmt_item32_t from the motor buffer.
+// TODO: Detect buffer over run
 uint32_t next_half_item() {
   uint32_t duration = motor_buffer[motor_read];
-  if (duration <= MAX_RMT_DURATION) {
-    // TODO: Zeros? Stops? Directions?
+  if (duration == 0) {
+    // Do not advance motor_read, keep outputting zeros until it is handled
+    
+    // Set idle level to rmt_level_bit to keep the signal going.
+    // TODO: We need to set this while it it transmitting, or things go wrong!
+    // RMT.conf_ch[0].conf1.idle_out_lv = ~rmt_level_bit >> 15; // OPT: We only need to do this once.
+
+    // Infinitely repeat last bit
+    // return MAX_RMT_DURATION | ~rmt_level_bit;
+
+    // Return zero duration to stop transmission and trigger end event
     motor_read += 1;
     motor_read &= MOTOR_BUFFER_LEN - 1;
+    return 0 | (rmt_level_bit ^ RMT_LEVEL_BIT);
+    
+  } else if (duration <= MAX_RMT_DURATION) {
+    motor_read += 1;
+    motor_read &= MOTOR_BUFFER_LEN - 1;
+    uint32_t result = duration | rmt_level_bit;
     rmt_level_bit ^= RMT_LEVEL_BIT; // Flip level bit
-    return duration | rmt_level_bit;
+    return result;
   } else {
     motor_buffer[motor_read] = duration - MAX_RMT_DURATION;
     return MAX_RMT_DURATION | rmt_level_bit;
   }
 }
 
-inline void fill_buffer() {
-  
-}
-
 uint32_t rmt_buffer_offset = 0;
 
-void IRAM_ATTR on_rmt(void* arg) {
-  // Clear event
-  RMT.int_clr.ch0_tx_thr_event = 1;
-
+void IRAM_ATTR fill_half_buffer() {
   // Fill buffer
-  // TODO: Double buffer?
   for (int i = 0; i < 32; i++) {
     RMTMEM.chan[0].data32[i + rmt_buffer_offset].val = next_half_item() | (next_half_item() << 16);
-    Serial.print(RMTMEM.chan[0].data32[i + rmt_buffer_offset].duration0);
-    Serial.print(" ");
-    Serial.print(RMTMEM.chan[0].data32[i + rmt_buffer_offset].level0);
-    Serial.print(" ");
-    Serial.print(RMTMEM.chan[0].data32[i + rmt_buffer_offset].duration1);
-    Serial.print(" ");
-    Serial.println(RMTMEM.chan[0].data32[i + rmt_buffer_offset].level1);
+    if (false) {
+      Serial.print(RMTMEM.chan[0].data32[i + rmt_buffer_offset].duration0);
+      Serial.print(" ");
+      Serial.print(RMTMEM.chan[0].data32[i + rmt_buffer_offset].level0);
+      Serial.print(" ");
+      Serial.print(RMTMEM.chan[0].data32[i + rmt_buffer_offset].duration1);
+      Serial.print(" ");
+      Serial.println(RMTMEM.chan[0].data32[i + rmt_buffer_offset].level1);
+    }
   }
-  Serial.print("---");
   rmt_buffer_offset += 32;
   rmt_buffer_offset &= 63;
+}
+
+void IRAM_ATTR on_rmt(void* arg) {
+  //Serial.println("Event:");
+  if (RMT.int_st.ch0_tx_end) {
+    // TODO: set idle level
+    // TODO: handle commands (stop or reverse)
+
+    // TMC2209 requires 20ns setup and hold time.
+    // This interupt handler does 1400ns hold and 600ns setup at best.
+    digitalWrite(PIN_DIR, 1);
+    
+    // Continue (This causes a total 2 tick delay at 1MHz)
+    RMT.conf_ch[0].conf1.tx_start = 1;
+
+    // Clear event
+    RMT.int_clr.ch0_tx_end = 1;
+
+    // return;
+    Serial.println("End event:");
+  }
+  if (RMT.int_st.ch0_tx_thr_event) {
+    // Clear event
+    RMT.int_clr.ch0_tx_thr_event = 1;
+    //Serial.println("Treshold event:");
+    
+    fill_half_buffer();  
+  }
 }
 
 void setup() {
@@ -114,15 +152,16 @@ void setup() {
   
 
   // Configure RMT for driving STEP pulses
+  Serial.println("Configuring RMT");
   rmt_config_t config = {
     .rmt_mode         = RMT_MODE_TX,
     .channel          = RMT_CHANNEL_0,
-    .clk_div          = 80, // 80 MHz / 80 = 1MHz or 1 μs per tick
+    .clk_div          = 8, // 80 MHz / 80 = 1MHz or 1 μs per tick
     .gpio_num         = PIN_STEP,
     .mem_block_num    = 1,
   };
   config.tx_config = {
-    .loop_en              = true, // Repeat
+    .loop_en              = false, // Loop over ringbuffer
     .carrier_freq_hz      = 0,
     .carrier_duty_percent = 50, // %
     .carrier_level        = RMT_CARRIER_LEVEL_HIGH,
@@ -135,21 +174,33 @@ void setup() {
   ESP_ERROR_CHECK(rmt_isr_register(on_rmt, NULL, ESP_INTR_FLAG_LEVEL1, 0));
 
   // Clear motor buffer
+  Serial.println("Initializing buffer");
   for (int j = 0; j < MOTOR_BUFFER_LEN; j++)
-    motor_buffer[j] = j + 1;
+    motor_buffer[j] = 1;
 
+  motor_buffer[3] = 0;
+ 
   // Load buffer
+  Serial.println("Loading buffer");
   // TODO: Don't have initial commands in buffer
-  on_rmt(NULL);
+  fill_half_buffer();
+  fill_half_buffer();
 
-  // Enable treshold event
+  Serial.println("Registering interrupts");
+  // Enable end event (zero duration)
+  RMT.int_clr.ch0_tx_end = 1;
+  RMT.int_ena.ch0_tx_end = 1;
+  
+  // Enable treshold event every 32 events (half buffer)
   RMT.int_clr.ch0_tx_thr_event = 1;
   RMT.int_ena.ch0_tx_thr_event = 1;
   RMT.tx_lim_ch[0].limit = 32;
 
   // Start pulsing!
+  Serial.println("Starting..");
   RMT.conf_ch[0].conf1.mem_rd_rst = 1;
   RMT.conf_ch[0].conf1.tx_start = 1;
+  RMT.conf_ch[0].conf1.idle_out_lv = 1; // TODO: needs to be set to the value at the next zero.
 }
 
 uint32_t motor_time = 0;     // Time in 100ns
