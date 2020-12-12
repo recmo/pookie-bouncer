@@ -100,6 +100,8 @@ void IRAM_ATTR fill_half_buffer() {
 void IRAM_ATTR on_rmt(void* arg) {
   //Serial.println("Event:");
   if (RMT.int_st.ch0_tx_end) {
+    // NOTE: The timing until tx_start = 1 is elongates the current step.
+    // Ideally it is as fast as possible, hence the direct register writes. 
     switch (next_action) {
     case ACTION_DIR_LOW:
       // Set direction pin
@@ -109,19 +111,18 @@ void IRAM_ATTR on_rmt(void* arg) {
       // gpio_set_level(PIN_DIR, 1); // 12  us
       GPIO.out_w1tc = 1 << PIN_DIR; //  1.5 us
       RMT.conf_ch[0].conf1.tx_start = 1; // Continue
-      RMT.int_clr.ch0_tx_end = 1; // Clear event
       break;
     case ACTION_DIR_HIGH:
       GPIO.out_w1ts = 1 << PIN_DIR; //  1.5 ua
       RMT.conf_ch[0].conf1.tx_start = 1; // Continue
-      RMT.int_clr.ch0_tx_end = 1; // Clear event
       break;
     case ACTION_STOP:
-      RMT.int_clr.ch0_tx_end = 1; // Clear event
       break;
     default:
       break;
     }
+    // Clear event
+    RMT.int_clr.ch0_tx_end = 1;
 
     // return;
     Serial.println("End event:");
@@ -198,9 +199,9 @@ void setup() {
   for (int j = 0; j < MOTOR_BUFFER_LEN; j++)
     motor_buffer[j] = 2;
 
-  motor_buffer[2] = 1;
-  motor_buffer[3] = 0;
-  motor_buffer[4] = 1;
+  motor_buffer[5] = 1;
+  motor_buffer[6] = 0;
+  motor_buffer[7] = 1;
  
   // Load buffer
   Serial.println("Loading buffer");
@@ -221,8 +222,19 @@ void setup() {
   // Start pulsing!
   Serial.println("Starting..");
   RMT.conf_ch[0].conf1.mem_rd_rst = 1;
-  RMT.conf_ch[0].conf1.tx_start = 1;
-  RMT.conf_ch[0].conf1.idle_out_lv = 1; // TODO: needs to be set to the value at the next zero.
+  // TODO: Fix idle level.
+
+  // It is important that idle_out_lv and tx_start are set at the same time.
+  // Setting tx_start first and idle_out_lv second causes the value not to be picked up
+  // for very short pulse sequences.
+  // Setting idle_out_lv first causes the first step to take much longer.
+  // Setting them together like this causes the first step to take about 100ns longer,
+  // which is acceptable.
+  volatile uint32_t* conf1_reg = &RMT.conf_ch[0].conf1.val;
+  uint32_t conf1 = *conf1_reg;
+  conf1 |= 1 << 0; // conf1.tx_start = 1
+  conf1 |= 1 << 18; // conf1.idle_out_lv = 1;
+  *conf1_reg = conf1;
 }
 
 uint32_t motor_time = 0;     // Time in 100ns
