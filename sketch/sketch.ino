@@ -1,6 +1,7 @@
 #include <heltec.h>
 #include <driver/adc.h>
 #include <driver/rmt.h>
+#include <soc/gpio_struct.h>
 #include <soc/sens_reg.h>
 #include <soc/sens_struct.h>
 #include <soc/rmt_reg.h>
@@ -36,6 +37,12 @@ uint32_t motor_write = 0;
 #define RMT_LEVEL_BIT 0x8000
 uint32_t rmt_level_bit = RMT_LEVEL_BIT;
 
+#define ACTION_NONE 0
+#define ACTION_DIR_LOW 1
+#define ACTION_DIR_HIGH 2
+#define ACTION_STOP 3
+uint8_t next_action = ACTION_NONE;
+
 // Read next half of an rmt_item32_t from the motor buffer.
 // TODO: Detect buffer over run
 uint32_t next_half_item() {
@@ -49,6 +56,9 @@ uint32_t next_half_item() {
 
     // Infinitely repeat last bit
     // return MAX_RMT_DURATION | ~rmt_level_bit;
+
+    // Store action
+    next_action = ACTION_DIR_HIGH;
 
     // Return zero duration to stop transmission and trigger end event
     motor_read += 1;
@@ -90,18 +100,28 @@ void IRAM_ATTR fill_half_buffer() {
 void IRAM_ATTR on_rmt(void* arg) {
   //Serial.println("Event:");
   if (RMT.int_st.ch0_tx_end) {
-    // TODO: set idle level
-    // TODO: handle commands (stop or reverse)
-
-    // TMC2209 requires 20ns setup and hold time.
-    // This interupt handler does 1400ns hold and 600ns setup at best.
-    digitalWrite(PIN_DIR, 1);
-    
-    // Continue (This causes a total 2 tick delay at 1MHz)
-    RMT.conf_ch[0].conf1.tx_start = 1;
-
-    // Clear event
-    RMT.int_clr.ch0_tx_end = 1;
+    switch (next_action) {
+    case ACTION_DIR_LOW:
+      // Set direction pin
+      // TMC2209 requires 20ns setup and hold time on DIR.
+      // This interupt handler does 1400ns hold and 600ns setup at best.
+      // digitalWrite(PIN_DIR, 1);  //   2  us
+      // gpio_set_level(PIN_DIR, 1); // 12  us
+      GPIO.out_w1tc = 1 << PIN_DIR; //  1.5 us
+      RMT.conf_ch[0].conf1.tx_start = 1; // Continue
+      RMT.int_clr.ch0_tx_end = 1; // Clear event
+      break;
+    case ACTION_DIR_HIGH:
+      GPIO.out_w1ts = 1 << PIN_DIR; //  1.5 ua
+      RMT.conf_ch[0].conf1.tx_start = 1; // Continue
+      RMT.int_clr.ch0_tx_end = 1; // Clear event
+      break;
+    case ACTION_STOP:
+      RMT.int_clr.ch0_tx_end = 1; // Clear event
+      break;
+    default:
+      break;
+    }
 
     // return;
     Serial.println("End event:");
@@ -176,9 +196,11 @@ void setup() {
   // Clear motor buffer
   Serial.println("Initializing buffer");
   for (int j = 0; j < MOTOR_BUFFER_LEN; j++)
-    motor_buffer[j] = 1;
+    motor_buffer[j] = 2;
 
+  motor_buffer[2] = 1;
   motor_buffer[3] = 0;
+  motor_buffer[4] = 1;
  
   // Load buffer
   Serial.println("Loading buffer");
