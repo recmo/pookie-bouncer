@@ -18,6 +18,10 @@ download a fixed [esptool](https://github.com/espressif/arduino-esp32/files/5556
 and place it in `~/Library/Arduino15/packages/Heltec-esp32/tools/esptool_py/2.6.1`, overwriting
 the existing. Then convince mac to execute it.
 
+## Features
+
+* Four potentiometers
+
 ## References
 
 * Heltec WiFi Kit 32 ESP32 board

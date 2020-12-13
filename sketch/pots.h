@@ -1,3 +1,11 @@
+// Driver for the Potentiometers
+//
+// Pots can be read at any time using POT(n) which returns a [0, 1] value
+// for pot n as a float.
+//
+// Uses ADCs with 1kHz sampling and Kalman filtering.
+//
+
 #pragma once
 #include <driver/adc.h>
 #include <soc/sens_reg.h>

@@ -84,7 +84,7 @@ void IRAM_ATTR fill_half_buffer() {
   // Fill buffer
   for (int i = 0; i < 32; i++) {
     RMTMEM.chan[0].data32[i + rmt_buffer_offset].val = next_half_item() | (next_half_item() << 16);
-    if (false) {
+    if (true) {
       Serial.print(RMTMEM.chan[0].data32[i + rmt_buffer_offset].duration0);
       Serial.print(" ");
       Serial.print(RMTMEM.chan[0].data32[i + rmt_buffer_offset].level0);
@@ -99,7 +99,7 @@ void IRAM_ATTR fill_half_buffer() {
 }
 
 void IRAM_ATTR on_rmt(void* arg) {
-  //Serial.println("Event:");
+  Serial.println("Event:");
   if (RMT.int_st.ch0_tx_end) {
     // NOTE: The RMT is currently in idle and outputting the idle level
     // (which should match the last step level). The interupt handling will
@@ -126,14 +126,17 @@ void IRAM_ATTR on_rmt(void* arg) {
     // Clear event
     RMT.int_clr.ch0_tx_end = 1;
 
+    Serial.println("/End event");
+  
     // TODO: Pop `next_action` value. (and also idle_lv?)
   }
   if (RMT.int_st.ch0_tx_thr_event) {
     // Clear event
     RMT.int_clr.ch0_tx_thr_event = 1;
-    //Serial.println("Treshold event:");
+    Serial.println("Treshold event");
     
     fill_half_buffer();  
+    Serial.println("/Treshold event");
   }
 }
 
@@ -183,7 +186,7 @@ void setup() {
     .mem_block_num    = 1,
   };
   config.tx_config = {
-    .loop_en              = false, // Loop over ringbuffer
+    .loop_en              = false,
     .carrier_freq_hz      = 0,
     .carrier_duty_percent = 50, // %
     .carrier_level        = RMT_CARRIER_LEVEL_HIGH,
@@ -198,11 +201,11 @@ void setup() {
   // Clear motor buffer
   Serial.println("Initializing buffer");
   for (int j = 0; j < MOTOR_BUFFER_LEN; j++)
-    motor_buffer[j] = 2;
+    motor_buffer[j] = j;
 
-  motor_buffer[5] = 1;
-  motor_buffer[6] = 0;
-  motor_buffer[7] = 1;
+  //motor_buffer[5] = 1;
+  //motor_buffer[6] = 0;
+  //motor_buffer[7] = 1;
  
   // Load buffer
   Serial.println("Loading buffer");
@@ -211,6 +214,7 @@ void setup() {
   fill_half_buffer();
 
   // Enable wraparound mode
+  // See https://www.esp32.com/viewtopic.php?t=3900
   RMT.apb_conf.mem_tx_wrap_en = 1;
 
   Serial.println("Registering interrupts");
@@ -226,6 +230,7 @@ void setup() {
   // Start pulsing!
   Serial.println("Starting..");
   RMT.conf_ch[0].conf1.mem_rd_rst = 1;
+  Serial.println("Starting..2");
 
   // TODO: Compute actual idle level (0 or 1)
 
@@ -235,11 +240,20 @@ void setup() {
   // Setting idle_out_lv first causes the first step to take much longer.
   // Setting them together like this causes the first step to take about 100ns longer,
   // which is acceptable.
-  volatile uint32_t* conf1_reg = &RMT.conf_ch[0].conf1.val;
-  uint32_t conf1 = *conf1_reg;
+  Serial.println("Starting..3");
+  uint32_t conf1 = RMT.conf_ch[0].conf1.val;
+  Serial.println("Starting..4");
   conf1 |= 1 << 0; // conf1.tx_start = 1
+  Serial.println("Starting..5");
   conf1 |= 1 << 18; // conf1.idle_out_lv = 1;
-  *conf1_reg = conf1;
+  Serial.println("Starting..6");
+  //RMT.conf_ch[0].conf1.val = conf1;
+  Serial.println("Starting..7");
+
+  
+  RMT.conf_ch[0].conf1.tx_start = 1;
+  
+  Serial.println("/Setup");
 }
 
 uint32_t motor_time = 0;     // Time in 100ns
@@ -295,22 +309,13 @@ float trajectory(uint32_t t) {
 uint tick = 0;
 
 void loop() {
+  Serial.println("Loop");
+  
   // Update potentiometer readings
+  Serial.println("Pots");
   update_pots();
 
-  // Serial.println((motor_read - motor_write) & (MOTOR_BUFFER_LEN - 1));
-
-  // UART
-  if (Serial2.available()) {
-    Serial.print("UART: ");
-    while (Serial2.available()) {
-      uint8_t rbyte = Serial2.read();
-      sprintf(buffer, "%02x ", rbyte);
-      Serial.print(buffer);
-    }
-    Serial.println("");
-  }
-
+  Serial.println("Motor buffer");
   while (can_write_pulse()) { // TODO: Don't write more than ~100 ms
     if (motor_time > M_PI * 2e7 / omega) {
       motor_time -= M_PI * 2e7 / omega;
@@ -337,15 +342,16 @@ void loop() {
       tick = motor_time;
     }
     write_pulse(step_direction, duration);
-    // write_pulse(true, MAX_DURATION);
   }
 
   // Display potentiometer readings
+  Serial.println("Display");
   sprintf(buffer, "%.3f %.3f %.3f %.3f", POT(0), POT(1), POT(2), POT(3));
   Heltec.display->clear();
   Heltec.display->drawString(0, 0, buffer);
   Heltec.display->display();
   // Serial.println(buffer);
 
+  Serial.println("/Loop");
   delay(10);
 }
