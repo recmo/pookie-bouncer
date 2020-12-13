@@ -12,6 +12,8 @@ All control should obey a maximum [jerk](https://en.wikipedia.org/wiki/Jerk_%28p
 The total continous movement is the sum of the velocity and the sinusoidal movement. Added to this
 is any sporadic movement to satisfy position requests within the jerk limit.
 
+**Hardware** Heltec ESP32 board, BIQU TMC2209 board, NEMA17 servo.
+
 **Note.** The Heltec Arduino board is currently broken on Mac OS Big Sur. See
 [this issue](https://github.com/espressif/arduino-esp32/issues/4408). To work around
 download a fixed [esptool](https://github.com/espressif/arduino-esp32/files/5556528/esptool.zip)
@@ -20,7 +22,10 @@ the existing. Then convince mac to execute it.
 
 ## Features
 
-* Four potentiometers
+* Four potentiometers providing fast and accurate [0, 1] control. The ADC in ESP32 is quite noisy,
+  to handle this the pots are sampled at 1kHz and processed with an tuned Kalman filter.
+* Accurate step/dir pulse production using the RMT peripheral with a custom driver. TMC2209 is
+  operating in 256 microstep double-edge mode.
 
 ## References
 
