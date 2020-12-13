@@ -210,6 +210,9 @@ void setup() {
   fill_half_buffer();
   fill_half_buffer();
 
+  // Enable wraparound mode
+  RMT.apb_conf.mem_tx_wrap_en = 1;
+
   Serial.println("Registering interrupts");
   // Enable end event (zero duration)
   RMT.int_clr.ch0_tx_end = 1;
